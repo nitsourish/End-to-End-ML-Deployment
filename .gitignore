@@ -1,0 +1,48 @@
+# Environment
+.env
+*.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Raw data — too large for git (144 MB). Stored in S3.
+# Upload once with: python scripts/upload_data.py --bucket $FEATURE_STORE_BUCKET
+data/*.csv
+data/*.parquet
+
+# ML artefacts (managed by MLflow / S3 — do not commit binaries)
+artifacts/
+mlruns/
+mlflow.db
+mlflow-artifacts/
+*.joblib
+*.pkl
+*.pickle
+
+# Reports
+reports/
+
+# Test coverage
+.coverage
+coverage.xml
+.pytest_cache/
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# macOS
+.DS_Store
+
+# Docker
+.dockerignore

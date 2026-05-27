@@ -1,0 +1,43 @@
+{
+  "version": "0.2",
+  "language": "en",
+  "words": [
+    "apprunner",
+    "APPRUNNER",
+    "joblib",
+    "levelname",
+    "mlflow",
+    "MLFLOW",
+    "uvicorn",
+    "sklearn",
+    "scikit",
+    "scaler",
+    "fastapi",
+    "pydantic",
+    "boto",
+    "botocore",
+    "pyarrow",
+    "parquet",
+    "snappy",
+    "evidently",
+    "ruff",
+    "moto",
+    "pytest",
+    "dotenv",
+    "ecr",
+    "ECR",
+    "fargate",
+    "codecov",
+    "httpx",
+    "smote",
+    "imbalanced"
+  ],
+  "ignorePaths": [
+    ".git",
+    "node_modules",
+    "*.lock",
+    "mlruns/",
+    "artifacts/",
+    "reports/"
+  ]
+}

@@ -1,0 +1,176 @@
+# =============================================================================
+#  CD Pipeline — pure deployment: build image → push ECR → deploy App Runner
+#
+#  This workflow does NOT retrain the model. It trusts whatever artifacts
+#  (scaler, selected_features) are already in the S3 feature store, and
+#  whatever model version is registered as "Staging" in MLflow.
+#
+#  Retraining is only triggered by retrain.yml when Evidently detects drift.
+#
+#  Triggers
+#  --------
+#  1. Push to main/master          — code change deploy (no retrain)
+#  2. workflow_dispatch            — manual deploy (no retrain)
+#  3. Called from retrain.yml      — post-retrain deploy (artifacts already updated)
+#
+#  Required GitHub Secrets:
+#    AWS_ACCESS_KEY_ID
+#    AWS_SECRET_ACCESS_KEY
+#    AWS_REGION                 (e.g. us-east-1)
+#    AWS_ACCOUNT_ID
+#    MLFLOW_TRACKING_URI        (e.g. http://<EC2-IP>:5000)
+#    APPRUNNER_SERVICE_ARN      (from aws_setup.sh output)
+#    FEATURE_STORE_BUCKET       (S3 bucket for raw data + feature store)
+# =============================================================================
+
+name: Deploy
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      reason:
+        description: "Reason for manual deploy (informational)"
+        required: false
+        default: "manual"
+
+jobs:
+  deploy:
+    name: Build → Push ECR → Deploy App Runner
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ---- Pull latest pipeline artifacts from S3 -------------------------
+      # The model artifacts (scaler.joblib, selected_features.json) were
+      # written by the last retrain.yml run. Download them so they are baked
+      # into the Docker image. If S3 download fails, the build aborts — we
+      # never ship a container without a valid feature pipeline.
+      - name: Download feature artifacts from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
+        run: |
+          mkdir -p artifacts/
+          python - <<'EOF'
+          import os, sys, logging
+          logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
+          sys.path.insert(0, ".")
+          from src.feature_pipeline.feature_store import S3FeatureStore
+
+          bucket = os.environ["FEATURE_STORE_BUCKET"]
+          fs = S3FeatureStore(bucket)
+
+          if not fs.ping():
+              print(f"ERROR: Cannot reach s3://{bucket}", flush=True)
+              sys.exit(1)
+
+          scaler, meta = fs.load_artifacts(local_cache_dir="artifacts/")
+          print(f"✅  Artifacts downloaded — {len(meta['selected_features'])} selected features")
+          EOF
+
+      # ---- AWS credentials ------------------------------------------------
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      # ---- ECR login -------------------------------------------------------
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ---- Build & push Docker image --------------------------------------
+      # artifacts/ now contains the real scaler + features baked from the
+      # last drift-triggered retrain, not a freshly retrained model.
+      - name: Build and push image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          IMAGE_URI="${ECR_REGISTRY}/fraud-detection:${IMAGE_TAG}"
+          LATEST_URI="${ECR_REGISTRY}/fraud-detection:latest"
+
+          docker build \
+            -f infrastructure/docker/Dockerfile \
+            -t "${IMAGE_URI}" \
+            -t "${LATEST_URI}" \
+            .
+
+          docker push "${IMAGE_URI}"
+          docker push "${LATEST_URI}"
+
+          echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
+          echo "Pushed image: ${IMAGE_URI}"
+
+      # ---- Deploy to App Runner -------------------------------------------
+      - name: Deploy to App Runner
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+        run: |
+          aws apprunner update-service \
+            --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+            --source-configuration "{
+                \"ImageRepository\": {
+                    \"ImageIdentifier\": \"${IMAGE_URI}\",
+                    \"ImageConfiguration\": {
+                        \"Port\": \"8000\",
+                        \"RuntimeEnvironmentVariables\": {
+                            \"MLFLOW_TRACKING_URI\": \"${MLFLOW_TRACKING_URI}\",
+                            \"FEATURE_STORE_BUCKET\": \"${{ secrets.FEATURE_STORE_BUCKET }}\",
+                            \"MODEL_NAME\": \"fraud-detection-lr\",
+                            \"MODEL_STAGE\": \"Staging\",
+                            \"FRAUD_THRESHOLD\": \"0.5\"
+                        }
+                    },
+                    \"ImageRepositoryType\": \"ECR\"
+                },
+                \"AutoDeploymentsEnabled\": false
+            }"
+
+      # ---- Wait for deployment --------------------------------------------
+      - name: Wait for App Runner to reach RUNNING
+        run: |
+          echo "Waiting for App Runner service …"
+          for i in $(seq 1 20); do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+              --query 'Service.Status' --output text)
+            echo "  [${i}/20] Status: ${STATUS}"
+            if [ "${STATUS}" = "RUNNING" ]; then
+              echo "✅  Service is RUNNING"
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "❌  Deployment timed out after 10 minutes"
+          exit 1
+
+      # ---- Smoke test -----------------------------------------------------
+      - name: Smoke test deployed API
+        run: |
+          SERVICE_URL=$(aws apprunner describe-service \
+            --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+            --query 'Service.ServiceUrl' --output text)
+
+          echo "Smoke-testing https://${SERVICE_URL} …"
+          curl --fail --silent "https://${SERVICE_URL}/health"
+          echo ""
+          curl --fail --silent "https://${SERVICE_URL}/ready"
+          echo ""
+          echo "✅  Smoke tests passed — deploy complete"

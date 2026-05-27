@@ -1,0 +1,289 @@
+# =============================================================================
+#  Drift-Driven Retraining Pipeline
+#
+#  This is the ONLY place where model retraining happens.
+#  deploy.yml never retrains — it only ships whatever is already in S3/MLflow.
+#
+#  Retraining criteria (any one is sufficient):
+#    1. Evidently detects dataset drift (share of drifted features > threshold)
+#    2. Evidently detects concept/target drift (prediction distribution shifted)
+#    3. Manual trigger with force_retrain=true
+#
+#  Sequence:
+#    check-drift  →  (if drift)  retrain  →  trigger deploy.yml
+#
+#  Triggers:
+#    - Schedule: every Monday 03:00 UTC  (weekly drift health-check)
+#    - workflow_dispatch: manual trigger with optional force flag
+#
+#  Required GitHub Secrets:
+#    AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION
+#    MLFLOW_TRACKING_URI
+#    FEATURE_STORE_BUCKET
+# =============================================================================
+
+name: Drift Check + Conditional Retrain
+
+on:
+  schedule:
+    - cron: "0 3 * * 1"      # every Monday 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      force_retrain:
+        description: "Force retrain regardless of drift result (true/false)"
+        required: false
+        default: "false"
+      drift_threshold:
+        description: "Share of drifted features to trigger retrain (0.0–1.0)"
+        required: false
+        default: "0.2"      # retrain if >20% of features drift
+
+env:
+  # Thresholds used across steps
+  DRIFT_SHARE_THRESHOLD: ${{ github.event.inputs.drift_threshold || '0.2' }}
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Job 1: Check drift — always runs
+  # ---------------------------------------------------------------------------
+  check-drift:
+    name: Evidently Drift Check
+    runs-on: ubuntu-latest
+    outputs:
+      # Exposed to the retrain job
+      data_drift:    ${{ steps.drift.outputs.data_drift }}
+      target_drift:  ${{ steps.drift.outputs.target_drift }}
+      drift_share:   ${{ steps.drift.outputs.drift_share }}
+      should_retrain: ${{ steps.decision.outputs.should_retrain }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # ---- Download reference data from S3 --------------------------------
+      - name: Download reference + current data from S3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
+        run: |
+          python - <<'EOF'
+          import os, sys
+          sys.path.insert(0, ".")
+          from src.feature_pipeline.feature_store import S3FeatureStore
+
+          bucket = os.environ["FEATURE_STORE_BUCKET"]
+          fs = S3FeatureStore(bucket)
+
+          # Reference: original training data from S3 raw store
+          print("Downloading reference data …")
+          fs.download_raw_data("/tmp/reference.csv")
+
+          # Current: in production this would be inference logs from S3/Athena.
+          # Here we use the tail-20% of the raw data as a proxy.
+          # Replace with real production traffic data in a live system.
+          import pandas as pd
+          df = pd.read_csv("/tmp/reference.csv")
+          current = df.tail(int(len(df) * 0.2))
+          current.to_csv("/tmp/current.csv", index=False)
+          print(f"Reference: {len(df)} rows | Current proxy: {len(current)} rows")
+          EOF
+
+      # ---- Run Evidently drift checks --------------------------------------
+      - name: Run data drift check
+        id: drift
+        run: |
+          python - <<'EOF'
+          import json, os, sys
+          sys.path.insert(0, ".")
+          from src.monitoring.drift_detection import DataDriftMonitor
+
+          threshold = float(os.environ.get("DRIFT_SHARE_THRESHOLD", "0.2"))
+
+          monitor = DataDriftMonitor(
+              reference_path="/tmp/reference.csv",
+              report_dir="reports/",
+              reference_nrows=10_000,
+          )
+
+          import pandas as pd
+          current_df = pd.read_csv("/tmp/current.csv")
+          summary = monitor.run(current_df, report_name="data_drift_ci")
+
+          data_drift   = summary.get("dataset_drift", False)
+          drift_share  = summary.get("drift_share", 0.0)
+          drifted_cols = summary.get("drifted_features", [])
+
+          print(f"Dataset drift detected : {data_drift}")
+          print(f"Drift share            : {drift_share:.3f} (threshold: {threshold})")
+          print(f"Drifted features       : {drifted_cols}")
+
+          # Write GitHub output
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"data_drift={str(data_drift).lower()}\n")
+              f.write(f"drift_share={drift_share:.4f}\n")
+              # target_drift: placeholder — replace with real prediction logs
+              f.write("target_drift=false\n")
+
+          # Write summary to GitHub step summary
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("## Evidently Drift Report\n\n")
+              f.write(f"| Metric | Value |\n|--------|-------|\n")
+              f.write(f"| Dataset drift | {'⚠️ YES' if data_drift else '✅ NO'} |\n")
+              f.write(f"| Drift share | {drift_share:.1%} |\n")
+              f.write(f"| Threshold | {threshold:.1%} |\n")
+              f.write(f"| Drifted features | {', '.join(drifted_cols) or 'none'} |\n")
+          EOF
+        env:
+          DRIFT_SHARE_THRESHOLD: ${{ env.DRIFT_SHARE_THRESHOLD }}
+
+      # ---- Decide whether to retrain ---------------------------------------
+      - name: Evaluate retrain decision
+        id: decision
+        run: |
+          DATA_DRIFT="${{ steps.drift.outputs.data_drift }}"
+          TARGET_DRIFT="${{ steps.drift.outputs.target_drift }}"
+          FORCE="${{ github.event.inputs.force_retrain || 'false' }}"
+
+          echo "data_drift    = ${DATA_DRIFT}"
+          echo "target_drift  = ${TARGET_DRIFT}"
+          echo "force_retrain = ${FORCE}"
+
+          if [ "${DATA_DRIFT}" = "true" ] || \
+             [ "${TARGET_DRIFT}" = "true" ] || \
+             [ "${FORCE}" = "true" ]; then
+            echo "should_retrain=true" >> $GITHUB_OUTPUT
+            echo "### ⚠️ Retraining triggered" >> $GITHUB_STEP_SUMMARY
+            if [ "${FORCE}" = "true" ]; then
+              echo "Reason: forced manually" >> $GITHUB_STEP_SUMMARY
+            else
+              echo "Reason: drift detected" >> $GITHUB_STEP_SUMMARY
+            fi
+          else
+            echo "should_retrain=false" >> $GITHUB_OUTPUT
+            echo "### ✅ No retraining needed — model is healthy" >> $GITHUB_STEP_SUMMARY
+          fi
+
+      # ---- Upload Evidently reports → S3 (static website) ----------------
+      # Reports are pushed to s3://bucket/reports/YYYY-MM-DD/ so they're
+      # permanently browseable via the S3 static website endpoint.
+      # See DEPLOYMENT.md Step 3 for enabling static website hosting.
+      - name: Upload drift reports to S3
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
+        run: |
+          RUN_DATE=$(date -u +%Y-%m-%d)
+          RUN_ID="${{ github.run_id }}"
+          S3_PREFIX="s3://${FEATURE_STORE_BUCKET}/reports/${RUN_DATE}/${RUN_ID}"
+
+          if ls reports/*.html 2>/dev/null; then
+            aws s3 cp reports/ "${S3_PREFIX}/" \
+              --recursive --content-type "text/html" \
+              --cache-control "no-cache"
+            echo "### 📊 Evidently Reports" >> $GITHUB_STEP_SUMMARY
+            echo "Uploaded to: \`${S3_PREFIX}/\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            REGION="${{ secrets.AWS_REGION }}"
+            BUCKET="${FEATURE_STORE_BUCKET}"
+            echo "Static URL: \`http://${BUCKET}.s3-website-${REGION}.amazonaws.com/reports/${RUN_DATE}/${RUN_ID}/\`" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "No HTML reports generated (drift check may have skipped)"
+          fi
+
+      # ---- Also keep as GitHub artifact (30-day backup) -------------------
+      - name: Upload drift reports as GitHub artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: drift-reports-${{ github.run_id }}
+          path: reports/
+          retention-days: 30
+
+  # ---------------------------------------------------------------------------
+  # Job 2: Retrain — only if check-drift says so
+  # ---------------------------------------------------------------------------
+  retrain:
+    name: Retrain Model
+    needs: check-drift
+    if: needs.check-drift.outputs.should_retrain == 'true'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Log retrain reason
+        run: |
+          echo "### Retrain triggered" >> $GITHUB_STEP_SUMMARY
+          echo "- Data drift : ${{ needs.check-drift.outputs.data_drift }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Target drift: ${{ needs.check-drift.outputs.target_drift }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Drift share : ${{ needs.check-drift.outputs.drift_share }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Force flag  : ${{ github.event.inputs.force_retrain }}" >> $GITHUB_STEP_SUMMARY
+
+      # ---- Retrain from S3 feature store (fast path) ----------------------
+      # Uses pre-materialised Parquet features already in S3 — no need to
+      # re-run the full feature engineering pipeline on raw CSV.
+      - name: Retrain model from S3 feature store
+        env:
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+          FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+        run: |
+          python -m src.training.train \
+            --experiment-name fraud-detection-lr \
+            --artifacts-dir artifacts/ \
+            --s3-bucket "$FEATURE_STORE_BUCKET" \
+            --from-feature-store
+
+      - name: Upload trained artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-artifacts-${{ github.run_id }}
+          path: artifacts/
+          retention-days: 7
+
+  # ---------------------------------------------------------------------------
+  # Job 3: Deploy — only if retrain succeeded
+  # ---------------------------------------------------------------------------
+  deploy-after-retrain:
+    name: Deploy Retrained Model
+    needs: retrain
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Trigger deploy workflow
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'deploy.yml',
+              ref: context.ref,
+              inputs: { reason: 'post-retrain: drift detected and model retrained' }
+            });
+            console.log('deploy.yml triggered after successful retrain');
