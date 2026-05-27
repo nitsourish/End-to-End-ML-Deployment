@@ -19,7 +19,6 @@ In CI / scheduled jobs this module is imported and called directly.
 import argparse
 import json
 import logging
-import os
 import sys
 from datetime import datetime
 from pathlib import Path

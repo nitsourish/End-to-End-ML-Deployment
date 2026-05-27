@@ -29,7 +29,6 @@ from typing import Optional
 import joblib
 import mlflow
 import mlflow.sklearn
-import numpy as np
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, field_validator
@@ -38,7 +37,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from src.feature_pipeline.feature_engineering import transform_input
+from src.feature_pipeline.feature_engineering import transform_input  # noqa: E402
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")

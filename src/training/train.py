@@ -20,7 +20,6 @@ Environment variables (set in .env or CI secrets):
 """
 
 import argparse
-import json
 import logging
 import os
 import sys
@@ -28,7 +27,6 @@ from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
-import numpy as np
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
@@ -45,7 +43,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from src.feature_pipeline.feature_engineering import run_feature_pipeline
+from src.feature_pipeline.feature_engineering import run_feature_pipeline  # noqa: E402
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(message)s")
@@ -241,7 +239,6 @@ def _load_pipeline_from_store(bucket: str, artifacts_dir: str) -> dict:
     Returns a dict shaped identically to run_feature_pipeline().
     """
     from src.feature_pipeline.feature_store import S3FeatureStore
-    import json
 
     fs = S3FeatureStore(bucket)
     version = fs.latest_version()
