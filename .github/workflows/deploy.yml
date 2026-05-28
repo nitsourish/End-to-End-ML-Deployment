@@ -170,8 +170,35 @@ jobs:
             --query 'Service.ServiceUrl' --output text)
 
           echo "Smoke-testing https://${SERVICE_URL} …"
-          curl --fail --silent "https://${SERVICE_URL}/health"
+
+          # /health — liveness probe (container is up)
+          echo "--- /health ---"
+          curl --fail --silent --show-error "https://${SERVICE_URL}/health"
           echo ""
-          curl --fail --silent "https://${SERVICE_URL}/ready"
+
+          # /ready — readiness probe (model loaded); show body on failure
+          echo "--- /ready ---"
+          READY_HTTP=$(curl --silent --output /tmp/ready_body.json \
+            --write-out "%{http_code}" "https://${SERVICE_URL}/ready")
+          cat /tmp/ready_body.json
+          echo ""
+
+          if [ "${READY_HTTP}" != "200" ]; then
+            echo "❌  /ready returned HTTP ${READY_HTTP}"
+            echo ""
+            echo "Likely causes:"
+            echo "  1. No model registered in MLflow at models:/fraud-detection-lr@staging"
+            echo "     Fix: run training locally first, then re-deploy"
+            echo "  2. MLFLOW_TRACKING_URI secret is wrong or EC2 is unreachable"
+            echo "     Fix: curl \$MLFLOW_TRACKING_URI/health from the runner"
+            echo "  3. Container still starting (App Runner health check too fast)"
+            echo "     Fix: add 'sleep 30' before this step"
+            exit 1
+          fi
+
+          # /info — model metadata (optional, informational)
+          echo "--- /info ---"
+          curl --silent "https://${SERVICE_URL}/info" | python3 -m json.tool || true
+
           echo ""
           echo "✅  Smoke tests passed — deploy complete"
