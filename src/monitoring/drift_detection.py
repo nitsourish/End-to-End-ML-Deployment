@@ -187,26 +187,25 @@ class DataDriftMonitor:
         return summary
 
     def _save_to_workspace(self, report) -> None:
-        """Save report into an Evidently UI workspace for the local dashboard."""
-        try:
-            Workspace = _import_evidently_workspace()
-            ws = Workspace.create(self.workspace_dir)
-            # Re-use an existing project by name, or create one
-            projects = {p.name: p for p in ws.list_projects()}
-            if self.project_name in projects:
-                project = projects[self.project_name]
-            else:
-                project = ws.create_project(self.project_name)
-                project.description = "Fraud detection feature drift monitoring"
-                project.save()
-            ws.add_report(project.id, report)
-            logger.info(
-                "Report saved to workspace %s (project: %s). "
-                "Run: evidently ui --workspace %s --port 8080",
-                self.workspace_dir, self.project_name, self.workspace_dir,
-            )
-        except Exception as e:
-            logger.warning("Could not save to Evidently workspace: %s", e)
+        """Save report into an Evidently UI workspace for the local dashboard.
+
+        NOTE: evidently 0.7.x Workspace.add_run() expects Snapshot objects
+        from the new (non-legacy) API. This class uses the legacy API for
+        backward-compatible report generation, so workspace integration is
+        not currently supported. The standalone HTML report is the correct
+        output format for this version.
+
+        To enable the workspace UI in the future, migrate DataDriftMonitor
+        to use the new evidently.core API and generate Snapshots natively.
+        See: https://docs.evidentlyai.com/user-guide/monitoring/workspace
+        """
+        logger.warning(
+            "Workspace save skipped: evidently 0.7.x workspace requires the "
+            "new (non-legacy) Snapshot API. Use the standalone HTML report at "
+            "%s instead, or open it via: python -m http.server 8080 (from the "
+            "reports/ directory).",
+            self.report_dir,
+        )
 
 
 class TargetDriftMonitor:

@@ -23,8 +23,14 @@ pydantic==2.13.4
 python-multipart==0.0.29
 
 # Monitoring (0.7.21 is first version supporting numpy >= 2.1 / Python 3.13)
-# [ui] extra adds the local dashboard server (evidently ui --workspace ...)
-evidently[ui]==0.7.21
+# UI server (evidently ui --workspace ...) is included in the base package —
+# there is no separate [ui] extra in 0.7.21.
+evidently==0.7.21
+# evidently 0.7.21 requires litestar>=2.19.0 but crashes on 2.21+ due to
+# stricter kwarg-ambiguity validation in litestar's route registration
+# (ImproperlyConfiguredException on the /search/{project_name:str} route).
+# Pin to 2.19.0 until evidently ships a fix.
+litestar==2.19.0
 
 # Testing
 pytest==9.0.3
