@@ -1,3 +1,9 @@
+---
+noteId: "63f72ba05a8111f190395d1f402f7da9"
+tags: []
+
+---
+
 # Deployment Guide — End-to-End ML Pipeline
 
 Everything is orchestrated from a single S3 bucket. This guide takes you
@@ -43,7 +49,7 @@ drift monitoring, and automated retraining.
 |------|-------|---------|
 | AWS CLI v2 | `aws --version` | https://aws.amazon.com/cli |
 | Docker | `docker --version` | https://docker.com |
-| Python 3.11+ | `python3 --version` | https://python.org |
+| Python 3.13 | `python3 --version` | `brew install python@3.13` |
 | git | `git --version` | pre-installed on most systems |
 
 AWS credentials must be configured:
@@ -95,35 +101,36 @@ Loaded reference data from s3://fraud-detection-store-*/raw/creditcard_fraud.csv
 
 ---
 
-## Step 3 — Enable S3 static website (for Evidently reports)
+## Step 3 — Evidently reports (presigned URLs — no public access needed)
 
-This lets you open Evidently HTML reports directly in a browser.
+The feature store bucket contains sensitive model data, so we keep Block Public
+Access enabled. Instead of a public website endpoint, the drift workflow
+automatically generates **presigned URLs** (valid 4 hours) after each run and
+writes them to the GitHub Actions job summary.
 
+**How to view a report:**
+1. Go to the GitHub Actions run (retrain workflow)
+2. Click the `check-drift` job → open the **Summary** tab
+3. Click the presigned link — it opens the Evidently HTML report directly
+   in your browser without any AWS credentials
+
+**How to generate a presigned URL manually:**
 ```bash
-# Enable static website hosting on the bucket
-aws s3 website s3://${FEATURE_STORE_BUCKET}/ \
-    --index-document index.html \
-    --error-document error.html
-
-# Allow public read for the reports/ prefix only
-aws s3api put-bucket-policy \
-    --bucket "${FEATURE_STORE_BUCKET}" \
-    --policy "{
-        \"Version\": \"2012-10-17\",
-        \"Statement\": [{
-            \"Sid\": \"PublicReadReports\",
-            \"Effect\": \"Allow\",
-            \"Principal\": \"*\",
-            \"Action\": \"s3:GetObject\",
-            \"Resource\": \"arn:aws:s3:::${FEATURE_STORE_BUCKET}/reports/*\"
-        }]
-    }"
+aws s3 presign \
+  "s3://${FEATURE_STORE_BUCKET}/reports/$(date +%Y-%m-%d)/<RUN_ID>/data_drift_ci.html" \
+  --expires-in 14400   # 4 hours
 ```
 
-Report URL pattern (available after each drift check run):
+**How to list all drift reports in S3:**
+```bash
+aws s3 ls s3://${FEATURE_STORE_BUCKET}/reports/ --recursive
 ```
-http://{BUCKET}.s3-website-{REGION}.amazonaws.com/reports/{YYYY-MM-DD}/{RUN_ID}/data_drift_ci.html
-```
+
+> **Why not a public website?**  
+> `s3:PutBucketPolicy` is blocked by the bucket's Block Public Access setting
+> (all four flags are `true`). Changing them is safe *only* for purely public
+> assets. For a bucket that also holds raw fraud data, presigned URLs are the
+> correct pattern — temporary, authenticated, no ACL changes needed.
 
 ---
 

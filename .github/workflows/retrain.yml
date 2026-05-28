@@ -173,10 +173,11 @@ jobs:
             echo "### ✅ No retraining needed — model is healthy" >> $GITHUB_STEP_SUMMARY
           fi
 
-      # ---- Upload Evidently reports → S3 (static website) ----------------
-      # Reports are pushed to s3://bucket/reports/YYYY-MM-DD/ so they're
-      # permanently browseable via the S3 static website endpoint.
-      # See DEPLOYMENT.md Step 3 for enabling static website hosting.
+      # ---- Upload Evidently reports → S3 + generate presigned URLs ----------
+      # Reports are stored privately in s3://bucket/reports/YYYY-MM-DD/{run_id}/
+      # A 4-hour presigned URL is written to the GitHub step summary so
+      # team members can open the HTML without any public bucket policy.
+      # This avoids the need to disable S3 Block Public Access.
       - name: Upload drift reports to S3
         if: always()
         env:
@@ -193,14 +194,26 @@ jobs:
             aws s3 cp reports/ "${S3_PREFIX}/" \
               --recursive --content-type "text/html" \
               --cache-control "no-cache"
-            echo "### 📊 Evidently Reports" >> $GITHUB_STEP_SUMMARY
-            echo "Uploaded to: \`${S3_PREFIX}/\`" >> $GITHUB_STEP_SUMMARY
+
+            echo "### 📊 Evidently Drift Reports" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
-            REGION="${{ secrets.AWS_REGION }}"
-            BUCKET="${FEATURE_STORE_BUCKET}"
-            echo "Static URL: \`http://${BUCKET}.s3-website-${REGION}.amazonaws.com/reports/${RUN_DATE}/${RUN_ID}/\`" >> $GITHUB_STEP_SUMMARY
+            echo "Reports uploaded to \`${S3_PREFIX}/\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "**Presigned links (valid 4 hours):**" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+
+            # Generate a presigned URL for each HTML report
+            for html_file in reports/*.html; do
+              BASENAME=$(basename "${html_file}")
+              S3_KEY="reports/${RUN_DATE}/${RUN_ID}/${BASENAME}"
+              PRESIGNED=$(aws s3 presign \
+                "s3://${FEATURE_STORE_BUCKET}/${S3_KEY}" \
+                --expires-in 14400)   # 4 hours
+              echo "- [${BASENAME}](${PRESIGNED})" >> $GITHUB_STEP_SUMMARY
+            done
           else
-            echo "No HTML reports generated (drift check may have skipped)"
+            echo "No HTML reports generated (drift check may have skipped)" \
+              >> $GITHUB_STEP_SUMMARY
           fi
 
       # ---- Also keep as GitHub artifact (30-day backup) -------------------
