@@ -213,7 +213,14 @@ class TargetDriftMonitor:
 # ------------------------------------------------------------------
 
 def _parse_drift_summary(result: dict) -> dict:
-    """Extract drift summary from Evidently report dict."""
+    """Extract drift summary from Evidently report dict.
+
+    Handles two evidently result structures:
+      - evidently < 0.7: one ColumnDriftMetric entry per column, each with
+        ``column_name`` and ``drift_detected`` at the top level of ``result``.
+      - evidently >= 0.7 (legacy API): one DataDriftTable entry with all
+        per-column results nested inside ``result["drift_by_columns"]``.
+    """
     drifted_features = []
     drift_share = 0.0
     dataset_drift = False
@@ -221,15 +228,24 @@ def _parse_drift_summary(result: dict) -> dict:
     try:
         for metric in result.get("metrics", []):
             mtype = metric.get("metric", "")
-            if "DataDriftTable" in mtype or "ColumnDriftMetric" in mtype:
-                r = metric.get("result", {})
+            r = metric.get("result", {})
+
+            if "DataDriftTable" in mtype:
+                # evidently 0.7.x: per-column results are in drift_by_columns
+                for col_name, col_result in r.get("drift_by_columns", {}).items():
+                    if col_result.get("drift_detected", False):
+                        drifted_features.append(col_name)
+
+            elif "ColumnDriftMetric" in mtype:
+                # evidently < 0.7: flat per-column metric entry
                 if r.get("drift_detected", False):
                     col = r.get("column_name", "unknown")
                     drifted_features.append(col)
+
             if "DatasetDriftMetric" in mtype:
-                r = metric.get("result", {})
                 dataset_drift = r.get("dataset_drift", False)
                 drift_share = r.get("share_of_drifted_columns", 0.0)
+
     except Exception as e:
         logger.warning("Error parsing drift result: %s", e)
 

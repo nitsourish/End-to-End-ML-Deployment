@@ -99,22 +99,34 @@ jobs:
           import os, sys
           sys.path.insert(0, ".")
           from src.feature_pipeline.feature_store import S3FeatureStore
+          import numpy as np
+          import pandas as pd
 
           bucket = os.environ["FEATURE_STORE_BUCKET"]
           fs = S3FeatureStore(bucket)
 
-          # Reference: original training data from S3 raw store
+          # Download the full raw dataset
           print("Downloading reference data …")
-          fs.download_raw_data("/tmp/reference.csv")
+          fs.download_raw_data("/tmp/creditcard_full.csv")
+          df = pd.read_csv("/tmp/creditcard_full.csv")
 
-          # Current: in production this would be inference logs from S3/Athena.
-          # Here we use the tail-20% of the raw data as a proxy.
-          # Replace with real production traffic data in a live system.
-          import pandas as pd
-          df = pd.read_csv("/tmp/reference.csv")
-          current = df.tail(int(len(df) * 0.2))
-          current.to_csv("/tmp/current.csv", index=False)
-          print(f"Reference: {len(df)} rows | Current proxy: {len(current)} rows")
+          # IMPORTANT: the creditcard dataset is time-ordered.
+          # Using head(10k) as reference vs tail(20%) as current creates huge
+          # artificial "drift" purely from time-of-day differences (midnight-3am
+          # vs 3pm-midnight). Use a reproducible RANDOM 80/20 split instead so
+          # reference and current share the same overall distribution.
+          #
+          # In a real production system replace current.csv with actual
+          # inference-log rows pulled from S3/Athena/a feature store.
+          rng = np.random.default_rng(seed=42)
+          idx = rng.permutation(len(df))
+          n_ref = int(len(df) * 0.8)
+          reference = df.iloc[idx[:n_ref]].reset_index(drop=True)
+          current   = df.iloc[idx[n_ref:]].reset_index(drop=True)
+
+          reference.to_csv("/tmp/reference.csv", index=False)
+          current.to_csv("/tmp/current.csv",   index=False)
+          print(f"Reference: {len(reference)} rows | Current proxy: {len(current)} rows")
           EOF
 
       # ---- Run Evidently drift checks --------------------------------------
@@ -131,7 +143,7 @@ jobs:
           monitor = DataDriftMonitor(
               reference_path="/tmp/reference.csv",
               report_dir="reports/",
-              reference_nrows=10_000,
+              reference_nrows=None,   # use full 80% sample — no head() truncation
           )
 
           import pandas as pd
@@ -222,13 +234,20 @@ jobs:
             echo "**Presigned links (valid 4 hours):**" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
 
-            # Generate a presigned URL for each HTML report
+            # Generate a presigned URL for each HTML report.
+            # --region must match the bucket region, otherwise AWS returns
+            # SignatureDoesNotMatch when the URL is opened.
+            # AKIA (permanent) credentials sign URLs that stay valid for the
+            # full --expires-in window; ASIA (SSO) URLs expire when the session
+            # token expires, which may be sooner.
+            REGION="${AWS_DEFAULT_REGION:-us-east-1}"
             for html_file in reports/*.html; do
               BASENAME=$(basename "${html_file}")
               S3_KEY="reports/${RUN_DATE}/${RUN_ID}/${BASENAME}"
               PRESIGNED=$(aws s3 presign \
                 "s3://${FEATURE_STORE_BUCKET}/${S3_KEY}" \
-                --expires-in 14400)   # 4 hours
+                --expires-in 14400 \
+                --region "${REGION}")   # 4 hours; needs AKIA creds to last full TTL
               echo "- [${BASENAME}](${PRESIGNED})" >> $GITHUB_STEP_SUMMARY
             done
           else
