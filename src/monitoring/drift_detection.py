@@ -40,9 +40,10 @@ logger = logging.getLogger(__name__)
 # ------------------------------------------------------------------
 def _import_evidently():
     try:
-        from evidently.report import Report
-        from evidently.metric_preset import DataDriftPreset, TargetDriftPreset, DataQualityPreset
-        from evidently.metrics import DatasetDriftMetric
+        # evidently 0.7+ moved the original Report/Preset API to evidently.legacy.*
+        from evidently.legacy.report import Report
+        from evidently.legacy.metric_preset import DataDriftPreset, TargetDriftPreset, DataQualityPreset
+        from evidently.legacy.metrics import DatasetDriftMetric
         return Report, DataDriftPreset, TargetDriftPreset, DataQualityPreset, DatasetDriftMetric
     except ImportError as e:
         raise ImportError(
@@ -179,7 +180,7 @@ class TargetDriftMonitor:
     ) -> dict:
         """Compare prediction distributions; return summary dict."""
         _, _, TargetDriftPreset, _, _ = _import_evidently()
-        from evidently.report import Report
+        from evidently.legacy.report import Report
 
         ref_df = pd.DataFrame({"prediction": self.reference_preds})
         cur_df = pd.DataFrame({"prediction": current_predictions.rename("prediction")})
