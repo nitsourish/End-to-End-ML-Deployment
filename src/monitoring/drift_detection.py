@@ -51,6 +51,18 @@ def _import_evidently():
         ) from e
 
 
+def _import_evidently_workspace():
+    """Import the evidently 0.7.x workspace / UI API (optional dependency)."""
+    try:
+        from evidently.ui.workspace import Workspace
+        return Workspace
+    except ImportError as e:
+        raise ImportError(
+            "evidently workspace UI requires 'evidently[ui]'. "
+            "Run: pip install 'evidently[ui]'"
+        ) from e
+
+
 # ------------------------------------------------------------------
 # Feature columns (PCA features + engineered)
 # ------------------------------------------------------------------
@@ -88,16 +100,31 @@ class DataDriftMonitor:
     """
     Compares feature distributions between a reference (training) dataset
     and a current (production) dataset using Evidently's DataDriftPreset.
+
+    Reports are saved as:
+      - Standalone HTML  (open in any browser, no server needed)
+      - JSON             (raw data for programmatic consumption)
+      - Evidently workspace (optional — enables ``evidently ui`` dashboard)
+
+    Usage (local UI dashboard)
+    --------------------------
+    monitor = DataDriftMonitor(..., workspace_dir="evidently_workspace")
+    monitor.run(current_df)
+    # then: evidently ui --workspace evidently_workspace --port 8080
     """
 
     def __init__(
         self,
         reference_path: str,
         report_dir: str = "reports",
-        reference_nrows: Optional[int] = 10_000,
+        reference_nrows: Optional[int] = None,
+        workspace_dir: Optional[str] = None,   # set to enable evidently ui
+        project_name: str = "Fraud Detection Monitoring",
     ):
         self.report_dir = Path(report_dir)
         self.report_dir.mkdir(parents=True, exist_ok=True)
+        self.workspace_dir = workspace_dir
+        self.project_name = project_name
 
         logger.info("Loading reference data from %s …", reference_path)
         ref_df = _load_and_prepare(reference_path, nrows=reference_nrows)
@@ -132,17 +159,19 @@ class DataDriftMonitor:
         ])
         report.run(reference_data=self.reference, current_data=curr_features)
 
-        # Save HTML report
+        # Save standalone HTML + JSON (always)
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
         name = report_name or f"data_drift_{ts}"
         html_path = self.report_dir / f"{name}.html"
         json_path = self.report_dir / f"{name}.json"
         report.save_html(str(html_path))
 
-        # Extract summary from JSON
         result = report.as_dict()
-        report_json = json.dumps(result, default=str)
-        json_path.write_text(report_json)
+        json_path.write_text(json.dumps(result, default=str))
+
+        # Optionally save into an Evidently workspace (enables evidently ui)
+        if self.workspace_dir:
+            self._save_to_workspace(report)
 
         summary = _parse_drift_summary(result)
         summary["report_path"] = str(html_path)
@@ -156,6 +185,28 @@ class DataDriftMonitor:
             summary["drift_share"],
         )
         return summary
+
+    def _save_to_workspace(self, report) -> None:
+        """Save report into an Evidently UI workspace for the local dashboard."""
+        try:
+            Workspace = _import_evidently_workspace()
+            ws = Workspace.create(self.workspace_dir)
+            # Re-use an existing project by name, or create one
+            projects = {p.name: p for p in ws.list_projects()}
+            if self.project_name in projects:
+                project = projects[self.project_name]
+            else:
+                project = ws.create_project(self.project_name)
+                project.description = "Fraud detection feature drift monitoring"
+                project.save()
+            ws.add_report(project.id, report)
+            logger.info(
+                "Report saved to workspace %s (project: %s). "
+                "Run: evidently ui --workspace %s --port 8080",
+                self.workspace_dir, self.project_name, self.workspace_dir,
+            )
+        except Exception as e:
+            logger.warning("Could not save to Evidently workspace: %s", e)
 
 
 class TargetDriftMonitor:

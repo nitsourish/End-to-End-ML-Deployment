@@ -23,7 +23,8 @@ pydantic==2.13.4
 python-multipart==0.0.29
 
 # Monitoring (0.7.21 is first version supporting numpy >= 2.1 / Python 3.13)
-evidently==0.7.21
+# [ui] extra adds the local dashboard server (evidently ui --workspace ...)
+evidently[ui]==0.7.21
 
 # Testing
 pytest==9.0.3
