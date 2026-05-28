@@ -43,13 +43,35 @@ echo ""
 
 # ---- 1. Security group -------------------------------------------------------
 echo "[1/5] Creating security group …"
+# AWS requires pure ASCII in the description — no em-dashes or other Unicode.
+# We also pass --vpc-id explicitly to target the default VPC and make the
+# describe fallback reliable when the SG already exists.
+DEFAULT_VPC=$(aws ec2 describe-vpcs \
+    --filters "Name=is-default,Values=true" \
+    --query 'Vpcs[0].VpcId' --output text)
+
+if [ -z "${DEFAULT_VPC}" ] || [ "${DEFAULT_VPC}" = "None" ]; then
+    echo "ERROR: No default VPC found in region ${AWS_DEFAULT_REGION}."
+    echo "  Create a default VPC first:  aws ec2 create-default-vpc"
+    exit 1
+fi
+echo "  Using VPC: ${DEFAULT_VPC}"
+
 SG_ID=$(aws ec2 create-security-group \
     --group-name "${APP_NAME}-mlflow-sg" \
-    --description "MLflow tracking server — SSH + port 5000" \
+    --description "MLflow tracking server - SSH and port 5000" \
+    --vpc-id "${DEFAULT_VPC}" \
     --query 'GroupId' --output text 2>/dev/null \
     || aws ec2 describe-security-groups \
         --filters "Name=group-name,Values=${APP_NAME}-mlflow-sg" \
+                  "Name=vpc-id,Values=${DEFAULT_VPC}" \
         --query 'SecurityGroups[0].GroupId' --output text)
+
+if [ -z "${SG_ID}" ] || [ "${SG_ID}" = "None" ]; then
+    echo "ERROR: Failed to create or find security group."
+    echo "  Try manually: aws ec2 create-security-group --group-name ${APP_NAME}-mlflow-sg ..."
+    exit 1
+fi
 
 # SSH — your IP only
 aws ec2 authorize-security-group-ingress \
