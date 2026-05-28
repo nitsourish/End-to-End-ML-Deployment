@@ -127,21 +127,21 @@ jobs:
           aws apprunner update-service \
             --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
             --source-configuration "{
+                \"AutoDeploymentsEnabled\": false,
                 \"ImageRepository\": {
                     \"ImageIdentifier\": \"${IMAGE_URI}\",
+                    \"ImageRepositoryType\": \"ECR\",
                     \"ImageConfiguration\": {
                         \"Port\": \"8000\",
                         \"RuntimeEnvironmentVariables\": {
                             \"MLFLOW_TRACKING_URI\": \"${MLFLOW_TRACKING_URI}\",
                             \"FEATURE_STORE_BUCKET\": \"${{ secrets.FEATURE_STORE_BUCKET }}\",
                             \"MODEL_NAME\": \"fraud-detection-lr\",
-                            \"MODEL_STAGE\": \"Staging\",
+                            \"MODEL_STAGE\": \"staging\",
                             \"FRAUD_THRESHOLD\": \"0.5\"
                         }
-                    },
-                    \"ImageRepositoryType\": \"ECR\"
-                },
-                \"AutoDeploymentsEnabled\": false
+                    }
+                }
             }"
 
       # ---- Wait for deployment --------------------------------------------

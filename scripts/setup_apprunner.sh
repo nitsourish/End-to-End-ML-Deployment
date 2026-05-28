@@ -70,8 +70,13 @@ echo "[2/3] Creating App Runner service '${SERVICE_NAME}' …"
 SERVICE_ARN=$(aws apprunner create-service \
   --service-name "${SERVICE_NAME}" \
   --source-configuration "{
+    \"AuthenticationConfiguration\": {
+      \"AccessRoleArn\": \"${ROLE_ARN}\"
+    },
+    \"AutoDeploymentsEnabled\": false,
     \"ImageRepository\": {
       \"ImageIdentifier\": \"${ECR_URI}\",
+      \"ImageRepositoryType\": \"ECR\",
       \"ImageConfiguration\": {
         \"Port\": \"8000\",
         \"RuntimeEnvironmentVariables\": {
@@ -81,13 +86,8 @@ SERVICE_ARN=$(aws apprunner create-service \
           \"MODEL_STAGE\": \"staging\",
           \"FRAUD_THRESHOLD\": \"0.5\"
         }
-      },
-      \"ImageRepositoryType\": \"ECR\",
-      \"AuthenticationConfiguration\": {
-        \"AccessRoleArn\": \"${ROLE_ARN}\"
       }
-    },
-    \"AutoDeploymentsEnabled\": false
+    }
   }" \
   --instance-configuration '{
     "Cpu": "0.25 vCPU",
