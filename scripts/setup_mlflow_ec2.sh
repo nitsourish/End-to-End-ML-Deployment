@@ -123,14 +123,22 @@ aws iam add-role-to-instance-profile \
 sleep 10   # IAM propagation
 
 # ---- 3. UserData: install + configure MLflow as systemd service -------------
+# Uses a dedicated venv (/home/ec2-user/mlflow-venv) to avoid conflicts with
+# rpm-managed Python packages (requests, urllib3) on Amazon Linux 2023.
 echo "[3/5] Preparing UserData startup script …"
 USER_DATA=$(cat <<USERDATA
 #!/bin/bash
 set -e
 yum update -y
-yum install -y python3-pip python3-devel gcc sqlite
+yum install -y python3 python3-pip python3-devel gcc sqlite
 
-pip3 install mlflow boto3 psutil
+# Install into an isolated venv — avoids rpm-managed package conflicts
+python3 -m venv /home/ec2-user/mlflow-venv
+/home/ec2-user/mlflow-venv/bin/pip install --upgrade pip
+/home/ec2-user/mlflow-venv/bin/pip install mlflow boto3 psutil
+
+# Ensure ec2-user owns the venv
+chown -R ec2-user:ec2-user /home/ec2-user/mlflow-venv
 
 # Create MLflow systemd service
 cat > /etc/systemd/system/mlflow.service <<EOF
@@ -141,7 +149,7 @@ After=network.target
 [Service]
 User=ec2-user
 Restart=always
-ExecStart=/usr/local/bin/mlflow server \\
+ExecStart=/home/ec2-user/mlflow-venv/bin/mlflow server \\
     --host 0.0.0.0 \\
     --port 5000 \\
     --backend-store-uri sqlite:////home/ec2-user/mlflow.db \\
