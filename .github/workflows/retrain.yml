@@ -68,12 +68,30 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # ---- Guard: fail fast with a clear message if required secrets missing --
+      - name: Validate required secrets
+        env:
+          _KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          _SECRET: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          _BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
+        run: |
+          MISSING=""
+          [ -z "${_KEY}"    ] && MISSING="${MISSING} AWS_ACCESS_KEY_ID"
+          [ -z "${_SECRET}" ] && MISSING="${MISSING} AWS_SECRET_ACCESS_KEY"
+          [ -z "${_BUCKET}" ] && MISSING="${MISSING} FEATURE_STORE_BUCKET"
+          if [ -n "${MISSING}" ]; then
+            echo "::error::Required GitHub Secrets not set:${MISSING}"
+            echo "Go to: Settings → Secrets and variables → Actions → New repository secret"
+            exit 1
+          fi
+          echo "All required secrets are present ✅"
+
       # ---- Download reference data from S3 --------------------------------
       - name: Download reference + current data from S3
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
         run: |
           python - <<'EOF'
@@ -183,7 +201,7 @@ jobs:
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
           FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
         run: |
           RUN_DATE=$(date -u +%Y-%m-%d)
@@ -263,7 +281,7 @@ jobs:
           FEATURE_STORE_BUCKET: ${{ secrets.FEATURE_STORE_BUCKET }}
           AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+          AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION || 'us-east-1' }}
         run: |
           python -m src.training.train \
             --experiment-name fraud-detection-lr \

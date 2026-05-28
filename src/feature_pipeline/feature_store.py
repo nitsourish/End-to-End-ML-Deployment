@@ -94,10 +94,17 @@ class S3FeatureStore:
         endpoint_url: Optional[str] = None,   # useful for LocalStack / MinIO
     ):
         self.bucket = bucket
+        # os.getenv(key, default) only uses the default when the key is ABSENT.
+        # GitHub Actions sets missing secrets to "", so we need an extra `or`
+        # to fall back from an empty string to the hardcoded default.
+        effective_region = region or os.getenv("AWS_DEFAULT_REGION") or "us-east-1"
+        # Similarly, an empty-string endpoint_url must become None so boto3
+        # uses its own default endpoint rather than constructing "s3..amazonaws.com".
+        effective_endpoint = endpoint_url or os.getenv("AWS_S3_ENDPOINT_URL") or None
         self._s3 = boto3.client(
             "s3",
-            region_name=region or os.getenv("AWS_DEFAULT_REGION", "us-east-1"),
-            endpoint_url=endpoint_url or os.getenv("AWS_S3_ENDPOINT_URL"),
+            region_name=effective_region,
+            endpoint_url=effective_endpoint,
         )
         logger.info("S3FeatureStore initialised — bucket: s3://%s", bucket)
 
