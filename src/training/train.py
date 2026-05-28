@@ -265,22 +265,30 @@ def _load_pipeline_from_store(bucket: str, artifacts_dir: str) -> dict:
 
 
 def _promote_to_staging(model_name: str) -> None:
-    """Set the latest version of a registered model to Staging."""
+    """Tag the latest registered model version with the 'staging' alias.
+
+    MLflow 3.x removed stage transitions (Staging/Production) in favour of
+    aliases. ``@staging`` is the direct equivalent — use it anywhere you'd
+    reference the model:
+        models:/fraud-detection-lr@staging
+    """
     client = mlflow.tracking.MlflowClient()
     versions = client.search_model_versions(f"name='{model_name}'")
     if not versions:
         return
     latest = max(versions, key=lambda v: int(v.version))
     try:
-        client.transition_model_version_stage(
+        client.set_registered_model_alias(
             name=model_name,
+            alias="staging",
             version=latest.version,
-            stage="Staging",
-            archive_existing_versions=True,
         )
-        logger.info("Model '%s' v%s promoted to Staging", model_name, latest.version)
+        logger.info(
+            "Model '%s' v%s aliased as @staging  (load with: models:/%s@staging)",
+            model_name, latest.version, model_name,
+        )
     except Exception as e:
-        logger.warning("Could not transition model stage: %s", e)
+        logger.warning("Could not set staging alias: %s", e)
 
 
 # ------------------------------------------------------------------

@@ -1,10 +1,10 @@
 # Python 3.13 compatible — all packages have pre-built cp313 wheels.
 #
 # Pin notes:
-#   mlflow 2.18.0 is the first 2.x release that allows pyarrow >= 18;
-#     earlier 2.x required pyarrow<18, which has no cp313 wheel.
-#   evidently is capped at the 0.4.x series; 0.5+ rewrote the import
-#     paths used in src/monitoring/drift_detection.py (breaking change).
+#   mlflow 3.1.4 matches the version auto-installed on the EC2 tracking
+#     server (pip install mlflow pulls latest 3.x). Keeping client and
+#     server on the same major version avoids REST API edge-case differences.
+#   evidently 0.7.21 first version supporting numpy >= 2.1 / Python 3.13.
 
 # Core ML
 pandas==2.3.3
@@ -12,8 +12,8 @@ numpy==2.4.6
 scikit-learn==1.8.0
 imbalanced-learn==0.14.1
 
-# MLflow  (2.18 first to allow pyarrow >= 18)
-mlflow==2.18.0
+# MLflow  (3.1.4 matches EC2 tracking server version)
+mlflow==3.1.4
 boto3==1.43.16
 
 # Serving

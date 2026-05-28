@@ -47,7 +47,7 @@ logger = logging.getLogger(__name__)
 # Config
 # ------------------------------------------------------------------
 MODEL_NAME           = os.getenv("MODEL_NAME", "fraud-detection-lr")
-MODEL_STAGE          = os.getenv("MODEL_STAGE", "Staging")
+MODEL_STAGE          = os.getenv("MODEL_STAGE", "staging")   # alias in MLflow 3.x (lowercase)
 ARTIFACTS_DIR        = os.getenv("ARTIFACTS_DIR", str(ROOT / "artifacts"))
 FRAUD_THRESHOLD      = float(os.getenv("FRAUD_THRESHOLD", "0.5"))
 FEATURE_STORE_BUCKET = os.getenv("FEATURE_STORE_BUCKET")  # None → skip S3 for artifacts
@@ -70,16 +70,22 @@ def _load_model_and_artifacts() -> None:
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", f"file://{ROOT / 'mlruns'}")
     mlflow.set_tracking_uri(tracking_uri)
 
-    model_uri = f"models:/{MODEL_NAME}/{MODEL_STAGE}"
+    # MLflow 3.x uses aliases instead of stages.
+    # Format: models:/name@alias  (e.g. models:/fraud-detection-lr@staging)
+    # MLflow 2.x stage format (models:/name/Staging) is no longer supported.
+    model_uri = f"models:/{MODEL_NAME}@{MODEL_STAGE}"
     logger.info("Loading model from %s …", model_uri)
 
     try:
         _state["model"] = mlflow.sklearn.load_model(model_uri)
 
-        # Fetch version metadata
+        # Fetch version metadata via alias (get_latest_versions removed in 3.x)
         client = mlflow.tracking.MlflowClient()
-        versions = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE])
-        _state["model_version"] = versions[0].version if versions else "unknown"
+        try:
+            mv = client.get_model_version_by_alias(MODEL_NAME, MODEL_STAGE)
+            _state["model_version"] = mv.version
+        except Exception:
+            _state["model_version"] = "unknown"
         logger.info("Loaded model version %s", _state["model_version"])
 
     except Exception as e:
