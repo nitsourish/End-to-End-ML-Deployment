@@ -124,25 +124,41 @@ jobs:
         env:
           MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
         run: |
+          # Strip any trailing newlines/whitespace from secrets — a common
+          # copy-paste artifact that produces "Invalid control character" JSON errors.
+          MLFLOW_URI=$(printf '%s' "${MLFLOW_TRACKING_URI}" | tr -d '\r\n')
+
+          # Write source-configuration to a temp file so special characters
+          # in values (colons, slashes, newlines) never corrupt the JSON.
+          cat > /tmp/apprunner_config.json <<APPCFG
+          {
+            "AutoDeploymentsEnabled": false,
+            "AuthenticationConfiguration": {
+              "AccessRoleArn": "arn:aws:iam::${{ secrets.AWS_ACCOUNT_ID }}:role/fraud-detection-apprunner-ecr-role"
+            },
+            "ImageRepository": {
+              "ImageIdentifier": "${IMAGE_URI}",
+              "ImageRepositoryType": "ECR",
+              "ImageConfiguration": {
+                "Port": "8000",
+                "RuntimeEnvironmentVariables": {
+                  "MLFLOW_TRACKING_URI": "${MLFLOW_URI}",
+                  "FEATURE_STORE_BUCKET": "${{ secrets.FEATURE_STORE_BUCKET }}",
+                  "MODEL_NAME": "fraud-detection-lr",
+                  "MODEL_STAGE": "staging",
+                  "FRAUD_THRESHOLD": "0.5",
+                  "AWS_ACCESS_KEY_ID": "${{ secrets.AWS_ACCESS_KEY_ID }}",
+                  "AWS_SECRET_ACCESS_KEY": "${{ secrets.AWS_SECRET_ACCESS_KEY }}",
+                  "AWS_DEFAULT_REGION": "${{ secrets.AWS_REGION || 'us-east-1' }}"
+                }
+              }
+            }
+          }
+          APPCFG
+
           aws apprunner update-service \
             --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
-            --source-configuration "{
-                \"AutoDeploymentsEnabled\": false,
-                \"ImageRepository\": {
-                    \"ImageIdentifier\": \"${IMAGE_URI}\",
-                    \"ImageRepositoryType\": \"ECR\",
-                    \"ImageConfiguration\": {
-                        \"Port\": \"8000\",
-                        \"RuntimeEnvironmentVariables\": {
-                            \"MLFLOW_TRACKING_URI\": \"${MLFLOW_TRACKING_URI}\",
-                            \"FEATURE_STORE_BUCKET\": \"${{ secrets.FEATURE_STORE_BUCKET }}\",
-                            \"MODEL_NAME\": \"fraud-detection-lr\",
-                            \"MODEL_STAGE\": \"staging\",
-                            \"FRAUD_THRESHOLD\": \"0.5\"
-                        }
-                    }
-                }
-            }"
+            --source-configuration "$(cat /tmp/apprunner_config.json)"
 
       # ---- Wait for deployment --------------------------------------------
       - name: Wait for App Runner to reach RUNNING

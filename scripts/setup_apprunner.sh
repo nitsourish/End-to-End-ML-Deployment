@@ -28,6 +28,10 @@ set -euo pipefail
 
 ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
 ECR_URI="${ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/fraud-detection:latest"
+
+# Strip any accidental trailing newlines from env vars (common copy-paste artifact)
+MLFLOW_TRACKING_URI=$(printf '%s' "${MLFLOW_TRACKING_URI}" | tr -d '\r\n')
+FEATURE_STORE_BUCKET=$(printf '%s' "${FEATURE_STORE_BUCKET}" | tr -d '\r\n')
 APP_NAME="fraud-detection"
 ROLE_NAME="${APP_NAME}-apprunner-ecr-role"
 SERVICE_NAME="${APP_NAME}-api"
@@ -67,28 +71,37 @@ sleep 10   # IAM propagation
 # ── 2. Create App Runner service ──────────────────────────────────────────────
 echo "[2/3] Creating App Runner service '${SERVICE_NAME}' …"
 
-SERVICE_ARN=$(aws apprunner create-service \
-  --service-name "${SERVICE_NAME}" \
-  --source-configuration "{
-    \"AuthenticationConfiguration\": {
-      \"AccessRoleArn\": \"${ROLE_ARN}\"
-    },
-    \"AutoDeploymentsEnabled\": false,
-    \"ImageRepository\": {
-      \"ImageIdentifier\": \"${ECR_URI}\",
-      \"ImageRepositoryType\": \"ECR\",
-      \"ImageConfiguration\": {
-        \"Port\": \"8000\",
-        \"RuntimeEnvironmentVariables\": {
-          \"MLFLOW_TRACKING_URI\": \"${MLFLOW_TRACKING_URI}\",
-          \"FEATURE_STORE_BUCKET\": \"${FEATURE_STORE_BUCKET}\",
-          \"MODEL_NAME\": \"fraud-detection-lr\",
-          \"MODEL_STAGE\": \"staging\",
-          \"FRAUD_THRESHOLD\": \"0.5\"
-        }
+# Write config to a temp file — avoids shell-quoting issues with URLs/slashes
+# and ensures newlines in values never corrupt the JSON.
+cat > /tmp/apprunner_create_config.json <<APPCFG
+{
+  "AuthenticationConfiguration": {
+    "AccessRoleArn": "${ROLE_ARN}"
+  },
+  "AutoDeploymentsEnabled": false,
+  "ImageRepository": {
+    "ImageIdentifier": "${ECR_URI}",
+    "ImageRepositoryType": "ECR",
+    "ImageConfiguration": {
+      "Port": "8000",
+      "RuntimeEnvironmentVariables": {
+        "MLFLOW_TRACKING_URI": "${MLFLOW_TRACKING_URI}",
+        "FEATURE_STORE_BUCKET": "${FEATURE_STORE_BUCKET}",
+        "MODEL_NAME": "fraud-detection-lr",
+        "MODEL_STAGE": "staging",
+        "FRAUD_THRESHOLD": "0.5",
+        "AWS_ACCESS_KEY_ID": "${AWS_ACCESS_KEY_ID}",
+        "AWS_SECRET_ACCESS_KEY": "${AWS_SECRET_ACCESS_KEY}",
+        "AWS_DEFAULT_REGION": "${AWS_DEFAULT_REGION}"
       }
     }
-  }" \
+  }
+}
+APPCFG
+
+SERVICE_ARN=$(aws apprunner create-service \
+  --service-name "${SERVICE_NAME}" \
+  --source-configuration "$(cat /tmp/apprunner_create_config.json)" \
   --instance-configuration '{
     "Cpu": "0.25 vCPU",
     "Memory": "0.5 GB"
@@ -124,9 +137,14 @@ echo "════════════════════════�
 echo "  Service URL : https://${SERVICE_URL}"
 echo "  Service ARN : ${SERVICE_ARN}"
 echo ""
-echo "  Add this to GitHub Secrets:"
-echo "    APPRUNNER_SERVICE_ARN = ${SERVICE_ARN}"
-echo "    AWS_ACCOUNT_ID        = ${ACCOUNT_ID}"
+echo "  Add these to GitHub Secrets:"
+echo "    APPRUNNER_SERVICE_ARN    = ${SERVICE_ARN}"
+echo "    AWS_ACCOUNT_ID           = ${ACCOUNT_ID}"
+echo "    MLFLOW_TRACKING_URI      = ${MLFLOW_TRACKING_URI}"
+echo "    FEATURE_STORE_BUCKET     = ${FEATURE_STORE_BUCKET}"
+echo "    AWS_ACCESS_KEY_ID        = (your AKIA key — no trailing newline!)"
+echo "    AWS_SECRET_ACCESS_KEY    = (your AKIA secret)"
+echo "    AWS_REGION               = ${AWS_DEFAULT_REGION}"
 echo "════════════════════════════════════════════════════════"
 echo ""
 echo "  Smoke test:"
