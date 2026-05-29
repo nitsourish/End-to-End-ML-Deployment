@@ -119,6 +119,28 @@ jobs:
           echo "IMAGE_URI=${IMAGE_URI}" >> $GITHUB_ENV
           echo "Pushed image: ${IMAGE_URI}"
 
+      # ---- Pre-flight: wait for any in-progress operation to finish ----------
+      # update-service fails with InvalidStateException if a prior operation
+      # (e.g. a previous deploy run) is still OPERATION_IN_PROGRESS.
+      - name: Wait for App Runner to be idle before deploying
+        run: |
+          echo "Pre-flight: checking App Runner is not busy …"
+          for i in $(seq 1 30); do
+            STATUS=$(aws apprunner describe-service \
+              --service-arn "${{ secrets.APPRUNNER_SERVICE_ARN }}" \
+              --query 'Service.Status' --output text)
+            echo "  [${i}/30] Status: ${STATUS}"
+            if [ "${STATUS}" = "RUNNING" ] || [ "${STATUS}" = "CREATE_FAILED" ] || [ "${STATUS}" = "DELETE_FAILED" ]; then
+              echo "  ✅  Service is idle (${STATUS}) — safe to update"
+              break
+            fi
+            if [ "${i}" -eq 30 ]; then
+              echo "  ❌  Timed out waiting for service to become idle"
+              exit 1
+            fi
+            sleep 20
+          done
+
       # ---- Deploy to App Runner -------------------------------------------
       - name: Deploy to App Runner
         env:
